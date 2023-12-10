@@ -3,10 +3,14 @@ attribute vec4 a_position;
 attribute vec4 a_color;
 
 uniform mat4 u_matrix;
+uniform float u_fudgeFactor;
+
 
 varying vec4 v_color;
 
 void main() {
+
+
   // Multiply the position by the matrix.
   gl_Position = u_matrix * a_position;
 
@@ -103,6 +107,43 @@ var m4 = {
       0, -2 / height, 0, 0,
       0, 0, 2 / depth, 0,
       -1, 1, 0, 1,
+    ];
+  },
+
+  perspective: function (fieldOfViewInRadians, aspect, near, far) {
+    var f = Math.tan(Math.PI * 0.5 - 0.5 * fieldOfViewInRadians);
+    var rangeInv = 1.0 / (near - far);
+
+    return [
+      f / aspect, 0, 0, 0,
+      0, f, 0, 0,
+      0, 0, (near + far) * rangeInv, -1,
+      0, 0, near * far * rangeInv * 2, 0
+    ];
+  },
+
+  orthographic: function (left, right, bottom, top, near, far) {
+    return [
+      2 / (right - left), 0, 0, 0,
+      0, 2 / (top - bottom), 0, 0,
+      0, 0, 2 / (near - far), 0,
+
+      (left + right) / (left - right),
+      (bottom + top) / (bottom - top),
+      (near + far) / (near - far),
+      1,
+    ];
+  },
+
+  perspective: function (fieldOfViewInRadians, aspect, near, far) {
+    var f = Math.tan(Math.PI * 0.5 - 0.5 * fieldOfViewInRadians);
+    var rangeInv = 1.0 / (near - far);
+
+    return [
+      f / aspect, 0, 0, 0,
+      0, f, 0, 0,
+      0, 0, (near + far) * rangeInv, -1,
+      0, 0, near * far * rangeInv * 2, 0
     ];
   },
 
@@ -235,6 +276,8 @@ var m4 = {
 
 };
 
+
+
 function createShader(gl, type, source) {
   var shader = gl.createShader(type);
   gl.shaderSource(shader, source);
@@ -260,7 +303,14 @@ function createProgram(gl, vertexShader, fragmentShader) {
   gl.deleteProgram(program);
 }
 
-
+function makeZToWMatrix(fudgeFactor) {
+  return [
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, fudgeFactor,
+    0, 0, 0, 1,
+  ];
+}
 // Returns a random integer from 0 to range - 1.
 function randomInt(range) {
   return Math.floor(Math.random() * range);
@@ -278,26 +328,36 @@ function tmp_position(gl, positionLocation) {
 function tmp_color(gl, colorLocation) {
   var size = 3;
   var type = gl.UNSIGNED_BYTE;
-  var normalize = false;
+  var normalize = true;
   var stride = 0;
   var offset = 0;
   gl.vertexAttribPointer(colorLocation, size, type, normalize, stride, offset);
 }
 
-function drawScene(gl, program, positionAttributeLocation, colorAttributeLocation, matrixLocation, size_canvas, position, size_letter, rotation, scale, coordinates) {
-  gl.clear(gl.COLOR_BUFFER_BIT);
+function drawScene(gl, program, positionAttributeLocation, colorAttributeLocation, positionBuffer, colorBuffer, matrixLocation, fudgeLocation, size_canvas, position, size_letter, rotation, scale, fudgeFactor, coordinates) {
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.CULL_FACE);
+  gl.enable(gl.DEPTH_TEST);
+
   gl.useProgram(program);
 
   gl.enableVertexAttribArray(positionAttributeLocation);
+  gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
   tmp_position(gl, positionAttributeLocation)
 
   gl.enableVertexAttribArray(colorAttributeLocation);
+  gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
   tmp_color(gl, colorAttributeLocation)
 
+  var aspect = size_canvas / size_canvas;
+  var zNear = 1;
+  var zFar = 2000;
+  var fieldOfViewRadians = degToRad(0)
   // Compute the matrices
-  var matrix = m4.projection(size_canvas, size_canvas, 400);
+  // var matrix = makeZToWMatrix(fudgeFactor);
+  var matrix = m4.perspective(fieldOfViewRadians, aspect, zNear, zFar);
+  // matrix = m4.multiply(matrix, m4.orthographic(0, size_canvas, size_canvas, 0, 400, -400));
   matrix = m4.translate(matrix, position[0], position[1], position[2])
-  matrix = m4.translate(matrix, -size_letter[0] / 2, -size_letter[1] / 2, 0)
   matrix = m4.xRotate(matrix, rotation[0]);
   matrix = m4.yRotate(matrix, rotation[1]);
   matrix = m4.zRotate(matrix, rotation[2]);
@@ -306,8 +366,12 @@ function drawScene(gl, program, positionAttributeLocation, colorAttributeLocatio
   // Set the matrix.
   gl.uniformMatrix4fv(matrixLocation, false, matrix);
 
+  // Set the fudge.
+  gl.uniform1f(fudgeLocation, fudgeFactor);
+
   var primitiveType = gl.TRIANGLES;
   var offset = 0;
+  // console.log(coordinates.length / 3)
   var count = coordinates.length / 3;
   gl.drawArrays(primitiveType, offset, count);
 }
@@ -319,25 +383,139 @@ function setGeometry(gl, coordinates) {
     gl.STATIC_DRAW);
 }
 
-function setColors(gl) {
+function setColors(gl, coordinates) {
+  const colors = [];
+
+  for (let i = 0; i < coordinates.length / 3; i++) {
+    colors.push(...getColor());
+  }
+  console.log(colors)
   gl.bufferData(
     gl.ARRAY_BUFFER,
     new Uint8Array([
-      // left column front
-      5, 5, 5,
-      5, 5, 5,
-      5, 5, 5,
-      1, 1, 1,
-      1, 1, 1,
-      1, 1, 1,
+      // RGB(255, 0, 0) - Красный
+      // RGB(0, 255, 0) - Зелёный
+      // RGB(0, 0, 255) - Синий
+      // RGB(255, 255, 0) - Жёлтый
+      // RGB(255, 0, 255) - Пурпурный
+      // RGB(0, 255, 255) - Бирюзовый
+      // RGB(128, 0, 128) - Фиолетовый
+      // RGB(255, 165, 0) - Оранжевый
+      // RGB(128, 128, 128) - Серый
+      // RGB(0, 128, 0) - Тёмно-зелёный
+      // RGB(0, 0, 128) - Тёмно-синий
+
+      // перед верхней перекладины
+      255, 0, 0,
+      255, 0, 0,
+      255, 0, 0,
+      255, 0, 0,
+      255, 0, 0,
+      255, 0, 0,
+
+      // лево верхней перекладины
+      0, 255, 0,
+      0, 255, 0,
+      0, 255, 0,
+      0, 255, 0,
+      0, 255, 0,
+      0, 255, 0,
+
+      // право верхней перекладины
+      0, 0, 255,
+      0, 0, 255,
+      0, 0, 255,
+      0, 0, 255,
+      0, 0, 255,
+      0, 0, 255,
+
+      // обратная верхней перекладины
+      255, 255, 0,
+      255, 255, 0,
+      255, 255, 0,
+      255, 255, 0,
+      255, 255, 0,
+      255, 255, 0,
+
+      // верх верхней перекладины
+      255, 0, 255,
+      255, 0, 255,
+      255, 0, 255,
+      255, 0, 255,
+      255, 0, 255,
+      255, 0, 255,
+
+      // низ верхней перекладины
+      0, 255, 255,
+      0, 255, 255,
+      0, 255, 255,
+      0, 255, 255,
+      0, 255, 255,
+      0, 255, 255,
+
+      // перед вертикально палки
+      128, 0, 128,
+      128, 0, 128,
+      128, 0, 128,
+      128, 0, 128,
+      128, 0, 128,
+      128, 0, 128,
+
+      // лево вертикально палки
+      255, 165, 0,
+      255, 165, 0,
+      255, 165, 0,
+      255, 165, 0,
+      255, 165, 0,
+      255, 165, 0,
+
+      // право вертикально палки
+      128, 128, 128,
+      128, 128, 128,
+      128, 128, 128,
+      128, 128, 128,
+      128, 128, 128,
+      128, 128, 128,
+
+      // обратная вертикально палки
+      0, 128, 0,
+      0, 128, 0,
+      0, 128, 0,
+      0, 128, 0,
+      0, 128, 0,
+      0, 128, 0,
+
+      // верх вертикально палки
+      0, 0, 128,
+      0, 0, 128,
+      0, 0, 128,
+      0, 0, 128,
+      0, 0, 128,
+      0, 0, 128,
+
+      // низ вертикально палки
+      255, 255, 255,
+      255, 255, 255,
+      255, 255, 255,
+      255, 255, 255,
+      255, 255, 255,
+      255, 255, 255,
     ]),
     gl.STATIC_DRAW);
+}
+
+function randomInt(range) {
+  return Math.floor(Math.random() * range);
 }
 
 function to_rgb(colors) {
   return colors.map(function (value) {
     return value / 255;
   });
+}
+
+function getColor() {
+  return [randomInt(255), randomInt(255), randomInt(255)]
 }
 
 function printSineAndCosineForAnAngle(angleInDegrees) {
@@ -357,77 +535,105 @@ function degToRad(d) {
 
 function getArrayCoorinates(width, height, thickness) {
   return [
+
     // перед верхней перекладины
     0, 0, 0,
+    width, thickness, 0,
     width, 0, 0,
     width, thickness, 0,
-    width, thickness, 0,
+    0, 0, 0,
     0, thickness, 0,
+
+    // лево верхней перекладины
+    0, 0, 0,
+    0, thickness, thickness,
+    0, thickness, 0,
+    0, 0, thickness,
+    0, thickness, thickness,
     0, 0, 0,
 
-    // // верх верхней перекладины
-    // 0, 0, 0,
-    // 0, 0, thickness,
-    // width, 0, thickness,
-    // width, 0, thickness,
-    // width, 0, 0,
-    // 0, 0, 0,
+    // право верхней перекладины
+    width, 0, 0,
+    width, thickness, thickness,
+    width, 0, thickness,
+    width, thickness, thickness,
+    width, 0, 0,
+    width, thickness, 0,
 
-    // // обратная часть верхней перекладины
-    // 0, 0, thickness,
-    // width, 0, thickness,
-    // width, thickness, thickness,
-    // width, thickness, thickness,
-    // 0, thickness, thickness,
-    // 0, 0, thickness,
+    // обратная верхней перекладины
+    0, 0, thickness,
+    width, 0, thickness,
+    width, thickness, thickness,
+    width, thickness, thickness,
+    0, thickness, thickness,
+    0, 0, thickness,
 
-    // // низ передней перекладины 
-    // 0, thickness, 0,
-    // 0, thickness, thickness,
-    // width, thickness, thickness,
-    // width, thickness, thickness,
-    // width, thickness, 0,
-    // 0, thickness, 0,
+    // верх верхней перекладины
+    0, 0, 0,
+    width, 0, 0,
+    width, 0, thickness,
+    width, 0, thickness,
+    0, 0, thickness,
+    0, 0, 0,
 
-    // // левая часть верхней перекладины
-    // 0, 0, 0,
-    // 0, thickness, 0,
-    // 0, thickness, thickness,
-    // 0, thickness, thickness,
-    // 0, 0, thickness,
-    // 0, 0, 0,
+    // низ верхней перекладины
+    width, thickness, 0,
+    0, thickness, 0,
+    width, thickness, thickness,
+    width, thickness, thickness,
+    0, thickness, 0,
+    0, thickness, thickness,
 
-    // // правая часть верхней перекладины
-    // width, 0, 0,
-    // width, thickness, 0,
-    // width, thickness, thickness,
-    // width, thickness, thickness,
-    // 0, 0, thickness,
-    // 0, 0, 0,
 
-    // // передняя часть вертикальной палки
-    // width - thickness, thickness, 0,
-    // width, thickness, 0,
-    // width, height, 0,
-    // width, height, 0,
-    // width - thickness, height, 0,
-    // width - thickness, thickness, 0,
+    // перед вертикально палки
+    width - thickness, thickness, 0,
+    width, height, 0,
+    width, thickness, 0,
+    width, height, 0,
+    width - thickness, thickness, 0,
+    width - thickness, height, 0,
 
-    // // левая часть палки
-    // width - thickness, thickness, 0,
-    // width - thickness, height, 0,
-    // width - thickness, height, thickness,
-    // width - thickness, height, thickness,
-    // width - thickness, 0, thickness,
-    // width - thickness, thickness, 0,
+    // лево вертикально палки
+    width - thickness, thickness, 0,
+    width - thickness, height, thickness,
+    width - thickness, height, 0,
+    width - thickness, height, thickness,
+    width - thickness, thickness, 0,
+    width - thickness, thickness, thickness,
 
-    // // правая часть палки
-    // width, thickness, 0,
-    // width, height, 0,
-    // width, height, thickness,
-    // width, height, thickness,
-    // width, thickness, thickness,
-    // width, thickness, 0,
+    // право вертикально палки
+    width, thickness, 0,
+    width, height, thickness,
+    width, thickness, thickness,
+    width, height, thickness,
+    width, thickness, 0,
+    width, height, 0,
+
+    // обратная вертикально палки
+    width - thickness, thickness, thickness,
+    width, thickness, thickness,
+    width, height, thickness,
+    width, height, thickness,
+    width - thickness, height, thickness,
+    width - thickness, thickness, thickness,
+
+    // верх вертикально палки
+    width, thickness, thickness,
+    width - thickness, thickness, 0,
+    width, thickness, 0,
+    width, thickness, thickness,
+    width - thickness, thickness, thickness,
+    width - thickness, thickness, 0,
+
+    // низ вертикально палки
+    width - thickness, height, 0,
+    width, height, thickness,
+    width, height, 0,
+    width, height, thickness,
+    width - thickness, height, 0,
+    width - thickness, height, thickness,
+
+
   ]
 }
 
@@ -447,9 +653,13 @@ function main() {
   var position = [size_canvas / 2, size_canvas / 2, 0];
   var rotation = [degToRad(0), degToRad(0), degToRad(0)]
   var scale = [1, 1, 1];
+  var fudgeFactor = 1;
+
 
   gl.clearColor(...to_rgb(color_background), 1);
-  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.CULL_FACE);
+  gl.enable(gl.DEPTH_TEST);
 
   var vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexShaderText);
   var fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fragmentShaderText);
@@ -462,6 +672,7 @@ function main() {
   var colorAttributeLocation = gl.getAttribLocation(program, "a_color");
 
   var matrixLocation = gl.getUniformLocation(program, "u_matrix");
+  var fudgeLocation = gl.getUniformLocation(program, "u_fudgeFactor");
 
 
   var positionBuffer = gl.createBuffer();
@@ -470,10 +681,10 @@ function main() {
 
   var colorBuffer = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
-  setColors(gl)
+  setColors(gl, coordinates);
+  // function drawScene(gl, program, positionAttributeLocation, colorAttributeLocation, positionBuffer, colorBuffer, matrixLocation, fudgeLocation, size_canvas, position, size_letter, rotation, scale, fudgeFactor, coordinates) {
 
-
-  args = [gl, program, positionAttributeLocation, colorAttributeLocation, matrixLocation, size_canvas, position, [width, height], rotation, scale, coordinates]
+  args = [gl, program, positionAttributeLocation, colorAttributeLocation, positionBuffer, colorBuffer, matrixLocation, fudgeLocation, size_canvas, position, [width, height], rotation, scale, fudgeFactor, coordinates]
   drawScene(...args);
 
   // Setup a ui.
